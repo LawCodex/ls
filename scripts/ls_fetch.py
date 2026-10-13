@@ -1,12 +1,14 @@
 """Lesotho: download the legislation published on the Government of Lesotho portal (https://www.gov.ls):
 the Constitution of Lesotho and the Acts uploaded to the portal's media library (found through the portal's
-public WordPress REST API, /wp-json/wp/v2/media?search=...).
+public WordPress REST API, /wp-json/wp/v2/media?search=...), plus the Acts published by the former Government
+portal www.lesotho.gov.ls ("/bills/...Act....pdf"), retrieved from their Internet Archive captures.
 Cache: _raw/ls/. Usage: python ls_fetch.py
 """
 import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 import requests
 
@@ -29,9 +31,23 @@ def main():
                 continue
             seen.add(key)
             items.append({"title": t, "url": m["source_url"], "date_uploaded": m["date"][:10]})
+    cdx = ("https://web.archive.org/cdx/search/cdx?url=lesotho.gov.ls/bills/&matchType=prefix&output=json"
+           "&fl=original,timestamp&filter=mimetype:application/pdf&filter=statuscode:200&limit=5000")
+    best = {}
+    for orig, ts in requests.get(cdx, headers={"User-Agent": UA}, timeout=300).json()[1:]:
+        if not re.search(r"(?i)(^|[^a-z])act([^a-z]|$)", orig.rsplit("/", 1)[1].replace("_", " ").replace("-", " ")):
+            continue
+        key = orig.lower().replace(":80/", "/")
+        if key not in best or ts > best[key][1]:
+            best[key] = (orig, ts)
+    for key, (orig, ts) in sorted(best.items()):
+        t = re.sub(r"\.pdf$", "", unquote(orig.rsplit("/", 1)[1]), flags=re.I).replace("_", " ").replace("-", " ")
+        items.append({"title": re.sub(r"\s+", " ", t).strip(), "url": orig.replace(":80/", "/"),
+                      "archive": "https://web.archive.org/web/%sid_/%s" % (ts, orig),
+                      "archived": "https://web.archive.org/web/%s/%s" % (ts, orig)})
     for it in items:
         name = re.sub(r"[^A-Za-z0-9]+", "_", it["title"])[:100] + ".pdf"
-        it["file"] = fetch(it["url"], os.path.join(RAW, "pdf", name), delay=3, check_pdf=True, timeout=300)
+        it["file"] = fetch(it.get("archive", it["url"]), os.path.join(RAW, "pdf", name), delay=4, check_pdf=True, timeout=300)
         print("ok " if it["file"] else "FAIL", it["title"])
     json.dump(items, open(os.path.join(RAW, "index.json"), "w"), indent=1)
 
